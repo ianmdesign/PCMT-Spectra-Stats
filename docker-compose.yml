@@ -1,0 +1,22 @@
+services:
+  pcmt-stats:
+    image: ${PCMT_STATS_IMAGE:-ghcr.io/ianmdesign/pcmt-stats:latest}
+    build: .
+    container_name: pcmt-stats
+    restart: unless-stopped
+    ports:
+      - "5500:5500"
+    environment:
+      CONFIG_DIR: /app/config
+      DATA_DIR: /data
+      PORT: 5500
+      HENRIK_API_KEY: ${HENRIK_API_KEY:-}
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5500/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

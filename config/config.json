@@ -1,0 +1,15 @@
+{
+  "allowedSpectraEndpoints": [
+    "https://na.valospectra.com:5200",
+    "https://eu.valospectra.com:5200",
+    "http://imlxd.duckdns.org:5200",
+    "http://localhost:5200"
+  ],
+  "henrikApiBaseUrl": "https://api.henrikdev.xyz",
+  "henrikMaxRequestsPerMinute": 12,
+  "pollIntervalSeconds": 45,
+  "retryErrorSeconds": 60,
+  "requestTimeoutSeconds": 15,
+  "watchTtlSeconds": 300,
+  "maxActiveWatches": 50
+}

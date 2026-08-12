@@ -1,0 +1,55 @@
+name: Test and Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile Python sources
+        run: python -m compileall app tests
+
+      - name: Run stats tests
+        env:
+          PYTHONPATH: .
+        run: python -m unittest discover -s tests -v
+
+      - name: Validate configuration
+        env:
+          CONFIG_DIR: ${{ github.workspace }}/config
+          DATA_DIR: ${{ runner.temp }}/pcmt-stats-data
+        run: |
+          python - <<'PY'
+          from app.storage import AppConfig, STATS_LIFETIME_HOURS
+          config = AppConfig.load()
+          assert config.allowed_spectra_endpoints
+          assert config.poll_interval_seconds >= 10
+          assert config.watch_ttl_seconds >= 60
+          assert config.max_active_watches >= 1
+          assert 1 <= config.henrik_max_requests_per_minute <= 30
+          assert STATS_LIFETIME_HOURS == 24
+          print("Configuration is valid.")
+          PY
+
+      - name: Build Docker image
+        run: docker build -t pcmt-stats-ci .
