@@ -6,7 +6,7 @@ from app.tracker import SpectraWatchManager, StatsTracker
 
 
 class WatcherHelperTests(unittest.TestCase):
-    def test_extracts_first_player_puuid(self) -> None:
+    def test_extracts_first_player_puuid_from_player_id(self) -> None:
         value = SpectraWatchManager._first_player_puuid(
             {
                 "teams": [
@@ -16,6 +16,33 @@ class WatcherHelperTests(unittest.TestCase):
             }
         )
         self.assertEqual(value, "puuid-123")
+
+    def test_extracts_first_player_puuid_from_spectra_riot_id(self) -> None:
+        value = SpectraWatchManager._first_player_puuid(
+            {
+                "teams": [
+                    {"players": [{"riotId": "puuid-spectra-456"}]},
+                ]
+            }
+        )
+        self.assertEqual(value, "puuid-spectra-456")
+
+    def test_player_id_takes_precedence_over_riot_id(self) -> None:
+        value = SpectraWatchManager._first_player_puuid(
+            {
+                "teams": [
+                    {
+                        "players": [
+                            {
+                                "playerId": "puuid-new-field",
+                                "riotId": "puuid-current-spectra-field",
+                            }
+                        ]
+                    },
+                ]
+            }
+        )
+        self.assertEqual(value, "puuid-new-field")
 
     def test_missing_roster_returns_none(self) -> None:
         self.assertIsNone(SpectraWatchManager._first_player_puuid({"teams": []}))

@@ -236,7 +236,16 @@ class SpectraWatchManager:
             for player in team.get("players") or []:
                 if not isinstance(player, dict):
                     continue
-                value = str(player.get("playerId") or "").strip()
+
+                # Spectra Server currently serializes the Player object's
+                # internal `riotId` property. Keep `playerId` first for
+                # compatibility with any payload/version that exposes the
+                # original roster field name directly.
+                value = str(
+                    player.get("playerId")
+                    or player.get("riotId")
+                    or ""
+                ).strip()
                 if value:
                     return value
         return None
