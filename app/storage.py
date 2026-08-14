@@ -38,6 +38,7 @@ class AppConfig:
     watch_ttl_seconds: int = 300
     max_active_watches: int = 50
     henrik_max_requests_per_minute: int = 12
+    post_match_delay_seconds: int = 15
 
     @classmethod
     def load(cls) -> "AppConfig":
@@ -81,6 +82,9 @@ class AppConfig:
                         )
                     ),
                 ),
+            ),
+            post_match_delay_seconds=max(
+                5, int(raw.get("postMatchDelaySeconds", cls.post_match_delay_seconds))
             ),
         )
 
@@ -224,13 +228,27 @@ class StatsStore:
                 (spectra_endpoint, group_code),
             ).fetchone()
             if existing and existing["match_id"] == match_id:
+                updates: list[str] = []
+                params: list[Any] = []
+
                 if player_puuid and not existing["player_puuid"]:
+                    updates.append("player_puuid = ?")
+                    params.append(player_puuid)
+
+                # v0.2.x used "pending" for a live match and immediately started
+                # Henrik polling. Upgrade that legacy state the next time Spectra
+                # sends a packet, without disturbing newer completion states.
+                if existing["state"] == "pending":
+                    updates.append("state = 'live'")
+
+                if updates:
+                    params.extend([spectra_endpoint, group_code])
                     db.execute(
-                        """
-                        UPDATE group_stats SET player_puuid = ?
+                        f"""
+                        UPDATE group_stats SET {", ".join(updates)}
                         WHERE spectra_endpoint = ? AND group_code = ?
                         """,
-                        (player_puuid, spectra_endpoint, group_code),
+                        params,
                     )
                     db.commit()
                 return self.get(group_code, spectra_endpoint) or {}, False
@@ -244,12 +262,12 @@ class StatsStore:
                     group_code, match_id, spectra_endpoint, player_puuid, region,
                     state, stats_json, tracked_at, stored_at, expires_at,
                     last_attempt_at, last_error
-                ) VALUES (?, ?, ?, ?, NULL, 'pending', NULL, ?, NULL, NULL, NULL, NULL)
+                ) VALUES (?, ?, ?, ?, NULL, 'live', NULL, ?, NULL, NULL, NULL, NULL)
                 ON CONFLICT(spectra_endpoint, group_code) DO UPDATE SET
                     match_id = excluded.match_id,
                     player_puuid = excluded.player_puuid,
                     region = NULL,
-                    state = 'pending',
+                    state = 'live',
                     stats_json = NULL,
                     tracked_at = excluded.tracked_at,
                     stored_at = NULL,
@@ -261,6 +279,45 @@ class StatsStore:
             )
             db.commit()
         return self.get(group_code, spectra_endpoint) or {}, True
+
+    def mark_awaiting_end(
+        self, group_code: str, spectra_endpoint: str, match_id: str
+    ) -> bool:
+        with self._lock, self._connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE group_stats SET state = 'awaiting_end'
+                WHERE spectra_endpoint = ? AND group_code = ? AND match_id = ?
+                  AND state IN ('pending', 'live', 'awaiting_end')
+                """,
+                (
+                    normalize_endpoint(spectra_endpoint),
+                    normalize_group_code(group_code),
+                    match_id,
+                ),
+            )
+            db.commit()
+            return cursor.rowcount > 0
+
+    def mark_match_complete(
+        self, group_code: str, spectra_endpoint: str, match_id: str
+    ) -> bool:
+        with self._lock, self._connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE group_stats
+                SET state = 'awaiting_stats', last_error = NULL
+                WHERE spectra_endpoint = ? AND group_code = ? AND match_id = ?
+                  AND state IN ('pending', 'live', 'awaiting_end', 'awaiting_stats')
+                """,
+                (
+                    normalize_endpoint(spectra_endpoint),
+                    normalize_group_code(group_code),
+                    match_id,
+                ),
+            )
+            db.commit()
+            return cursor.rowcount > 0
 
     def get(self, group_code: str, spectra_endpoint: str) -> dict[str, Any] | None:
         group_code = normalize_group_code(group_code)
@@ -289,9 +346,29 @@ class StatsStore:
         return [self._row_to_dict(row) for row in rows]
 
     def list_pending(self) -> list[dict[str, Any]]:
+        """Return all unresolved matches for diagnostics."""
         with self._lock, self._connect() as db:
             rows = db.execute(
-                "SELECT * FROM group_stats WHERE state = 'pending' ORDER BY tracked_at"
+                """
+                SELECT * FROM group_stats
+                WHERE state IN ('pending', 'live', 'awaiting_end', 'awaiting_stats')
+                ORDER BY tracked_at
+                """
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def list_awaiting_stats(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM group_stats WHERE state = 'awaiting_stats' ORDER BY tracked_at"
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def list_awaiting_end(self) -> list[dict[str, Any]]:
+        """Matches that reached match point and still need Spectra end confirmation."""
+        with self._lock, self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM group_stats WHERE state = 'awaiting_end' ORDER BY tracked_at"
             ).fetchall()
         return [self._row_to_dict(row) for row in rows]
 

@@ -21,13 +21,21 @@ class StatsStoreTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def test_new_match_is_pending(self) -> None:
+    def test_new_match_is_live_and_makes_no_fetch_state(self) -> None:
         row, created = self.store.observe_match("abc", "match-1", EU, "p1", 1000)
         self.assertTrue(created)
         self.assertEqual(row["groupCode"], "ABC")
         self.assertEqual(row["spectraEndpoint"], EU)
-        self.assertEqual(row["state"], "pending")
+        self.assertEqual(row["state"], "live")
         self.assertIsNone(row["stats"])
+
+    def test_completion_state_progression(self) -> None:
+        self.store.observe_match("ABC", "match-1", EU, "p1", 1000)
+        self.assertTrue(self.store.mark_awaiting_end("ABC", EU, "match-1"))
+        self.assertEqual(self.store.get("ABC", EU)["state"], "awaiting_end")
+        self.assertTrue(self.store.mark_match_complete("ABC", EU, "match-1"))
+        self.assertEqual(self.store.get("ABC", EU)["state"], "awaiting_stats")
+        self.assertEqual(len(self.store.list_awaiting_stats()), 1)
 
     def test_same_match_is_idempotent_per_server(self) -> None:
         self.store.observe_match("ABC", "match-1", EU, "p1", 1000)
@@ -38,6 +46,18 @@ class StatsStoreTests(unittest.TestCase):
         self.store.observe_match("ABC", "match-1", EU, None, 1000)
         row, _ = self.store.observe_match("ABC", "match-1", EU, "later", 2000)
         self.assertEqual(row["playerPuuid"], "later")
+
+    def test_legacy_pending_becomes_live_on_next_spectra_packet(self) -> None:
+        self.store.observe_match("ABC", "match-1", EU, "p1", 1000)
+        with sqlite3.connect(self.db_path) as db:
+            db.execute(
+                "UPDATE group_stats SET state = 'pending' WHERE spectra_endpoint = ? AND group_code = 'ABC'",
+                (EU,),
+            )
+            db.commit()
+        row, created = self.store.observe_match("ABC", "match-1", EU, "p1", 2000)
+        self.assertFalse(created)
+        self.assertEqual(row["state"], "live")
 
     def test_same_group_code_on_different_servers_is_independent(self) -> None:
         eu_row, eu_created = self.store.observe_match("A", "eu-match", EU, "eu-p", 1000)
@@ -108,8 +128,6 @@ class StatsStoreTests(unittest.TestCase):
         self.assertEqual(self.store.get_cached_region("player-2"), "eu")
 
     def test_v01_database_migrates_to_composite_key(self) -> None:
-        # Recreate the exact v0.1.x table shape and make sure the new service can
-        # upgrade it in place without deleting the existing cached match.
         legacy_path = Path(self.temp.name) / "legacy.sqlite3"
         with sqlite3.connect(legacy_path) as db:
             db.execute(
@@ -144,7 +162,6 @@ class StatsStoreTests(unittest.TestCase):
 
         migrated = StatsStore(legacy_path)
         self.assertEqual(migrated.get("ABC", EU)["matchId"], "legacy-match")
-        # The same group code can now be inserted for a second server.
         migrated.observe_match("ABC", "na-match", NA, "p2", 2000)
         self.assertEqual(len(migrated.list_for_group("ABC")), 2)
 
