@@ -70,6 +70,46 @@ class WatcherHelperTests(unittest.TestCase):
     def test_missing_roster_returns_none(self) -> None:
         self.assertIsNone(SpectraWatchManager._first_player_puuid({"teams": []}))
 
+    def test_extracts_broadcast_info_from_spectra_match(self) -> None:
+        value = SpectraWatchManager._broadcast_info(
+            {
+                "teams": [
+                    {
+                        "teamName": "Left Team",
+                        "teamTricode": "LFT",
+                        "teamUrl": "https://example.com/left.png",
+                        "roundsWon": 13,
+                    },
+                    {
+                        "teamName": "Right Team",
+                        "teamTricode": "RGT",
+                        "teamUrl": "https://example.com/right.png",
+                        "roundsWon": 9,
+                    },
+                ],
+                "tools": {
+                    "tournamentInfo": {
+                        "name": "PCMT",
+                        "logoUrl": "https://example.com/event.png",
+                        "backdropUrl": "",
+                    },
+                    "sponsorInfo": {
+                        "enabled": True,
+                        "duration": 5,
+                        "sponsors": ["https://example.com/sponsor.png"],
+                    },
+                },
+            }
+        )
+        self.assertIsNotNone(value)
+        self.assertEqual(value["leftTeam"]["tricode"], "LFT")
+        self.assertEqual(value["rightTeam"]["tricode"], "RGT")
+        self.assertEqual(value["leftScore"], 13)
+        self.assertEqual(value["rightScore"], 9)
+        self.assertEqual(value["higherScore"], 0)
+        self.assertEqual(value["tournamentInfo"]["name"], "PCMT")
+        self.assertTrue(value["sponsorInfo"]["enabled"])
+
     def test_tracker_key_includes_endpoint(self) -> None:
         eu = StatsTracker._key("a", "https://eu.valospectra.com:5200/")
         na = StatsTracker._key("A", "https://na.valospectra.com:5200")

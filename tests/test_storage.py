@@ -37,6 +37,69 @@ class StatsStoreTests(unittest.TestCase):
         self.assertEqual(self.store.get("ABC", EU)["state"], "awaiting_stats")
         self.assertEqual(len(self.store.list_awaiting_stats()), 1)
 
+    def test_broadcast_info_is_persisted_and_updated(self) -> None:
+        first = {
+            "leftTeam": {"name": "Left", "tricode": "LFT", "url": "left.png"},
+            "rightTeam": {"name": "Right", "tricode": "RGT", "url": "right.png"},
+            "higherScore": 1,
+            "leftScore": 3,
+            "rightScore": 5,
+        }
+        self.store.observe_match(
+            "ABC", "match-1", EU, "p1", 1000, broadcast_info=first
+        )
+        self.assertEqual(self.store.get("ABC", EU)["broadcast"]["leftScore"], 3)
+
+        updated = dict(first)
+        updated["leftScore"] = 13
+        updated["rightScore"] = 9
+        updated["higherScore"] = 0
+        self.store.observe_match(
+            "ABC", "match-1", EU, "p1", 2000, broadcast_info=updated
+        )
+        row = self.store.get("ABC", EU)
+        self.assertEqual(row["broadcast"]["leftScore"], 13)
+        self.assertEqual(row["broadcast"]["higherScore"], 0)
+
+    def test_current_schema_migrates_broadcast_column_in_place(self) -> None:
+        current_path = Path(self.temp.name) / "current.sqlite3"
+        with sqlite3.connect(current_path) as db:
+            db.execute(
+                """
+                CREATE TABLE group_stats (
+                    group_code TEXT NOT NULL COLLATE NOCASE,
+                    match_id TEXT NOT NULL,
+                    spectra_endpoint TEXT NOT NULL,
+                    player_puuid TEXT,
+                    region TEXT,
+                    state TEXT NOT NULL,
+                    stats_json TEXT,
+                    tracked_at INTEGER NOT NULL,
+                    stored_at INTEGER,
+                    expires_at INTEGER,
+                    last_attempt_at INTEGER,
+                    last_error TEXT,
+                    PRIMARY KEY (spectra_endpoint, group_code)
+                )
+                """
+            )
+            db.execute(
+                """
+                INSERT INTO group_stats (
+                    group_code, match_id, spectra_endpoint, player_puuid, region,
+                    state, stats_json, tracked_at, stored_at, expires_at,
+                    last_attempt_at, last_error
+                ) VALUES ('ABC', 'match-1', ?, 'p1', 'eu', 'live', NULL, 1000, NULL, NULL, NULL, NULL)
+                """,
+                (EU,),
+            )
+            db.commit()
+
+        migrated = StatsStore(current_path)
+        row = migrated.get("ABC", EU)
+        self.assertEqual(row["matchId"], "match-1")
+        self.assertIsNone(row["broadcast"])
+
     def test_same_match_is_idempotent_per_server(self) -> None:
         self.store.observe_match("ABC", "match-1", EU, "p1", 1000)
         _, created = self.store.observe_match("abc", "match-1", EU + "/", "p1", 2000)

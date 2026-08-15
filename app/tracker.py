@@ -39,9 +39,10 @@ class StatsTracker:
         match_id: str,
         spectra_endpoint: str,
         player_puuid: str | None,
+        broadcast_info: dict[str, Any] | None = None,
     ) -> None:
         row, is_new = self.store.observe_match(
-            group_code, match_id, spectra_endpoint, player_puuid
+            group_code, match_id, spectra_endpoint, player_puuid, broadcast_info=broadcast_info
         )
         group_code = row["groupCode"]
         spectra_endpoint = row["spectraEndpoint"]
@@ -244,7 +245,10 @@ class SpectraWatchManager:
                             return
 
                         puuid = self._first_player_puuid(data)
-                        self.tracker.observe_match(group_code, match_id, endpoint, puuid)
+                        broadcast_info = self._broadcast_info(data)
+                        self.tracker.observe_match(
+                            group_code, match_id, endpoint, puuid, broadcast_info
+                        )
 
                         # Future Spectra versions may publish the final false
                         # transition. Current Spectra removes the Match object
@@ -429,6 +433,49 @@ class SpectraWatchManager:
         if match_type == "swift" or data.get("switchRound") == 5:
             return high >= 5
         return high >= 13
+
+    @staticmethod
+    def _broadcast_info(data: dict[str, Any]) -> dict[str, Any] | None:
+        teams = data.get("teams")
+        if not isinstance(teams, list) or len(teams) < 2:
+            return None
+        left = teams[0]
+        right = teams[1]
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return None
+
+        def team_payload(team: dict[str, Any]) -> dict[str, str]:
+            return {
+                "name": str(team.get("teamName") or "").strip(),
+                "tricode": str(team.get("teamTricode") or "").strip(),
+                "url": str(team.get("teamUrl") or "").strip(),
+            }
+
+        try:
+            left_score = int(left.get("roundsWon") or 0)
+        except (TypeError, ValueError):
+            left_score = 0
+        try:
+            right_score = int(right.get("roundsWon") or 0)
+        except (TypeError, ValueError):
+            right_score = 0
+
+        tools = data.get("tools") if isinstance(data.get("tools"), dict) else {}
+        tournament_info = tools.get("tournamentInfo")
+        sponsor_info = tools.get("sponsorInfo")
+
+        result: dict[str, Any] = {
+            "leftTeam": team_payload(left),
+            "rightTeam": team_payload(right),
+            "higherScore": 0 if left_score > right_score else 1,
+            "leftScore": left_score,
+            "rightScore": right_score,
+        }
+        if isinstance(tournament_info, dict):
+            result["tournamentInfo"] = tournament_info
+        if isinstance(sponsor_info, dict):
+            result["sponsorInfo"] = sponsor_info
+        return result
 
     @staticmethod
     def _first_player_puuid(data: dict[str, Any]) -> str | None:

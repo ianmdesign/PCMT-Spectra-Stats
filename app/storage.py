@@ -126,6 +126,7 @@ class StatsStore:
                 player_puuid TEXT,
                 region TEXT,
                 state TEXT NOT NULL,
+                broadcast_json TEXT,
                 stats_json TEXT,
                 tracked_at INTEGER NOT NULL,
                 stored_at INTEGER,
@@ -179,9 +180,16 @@ class StatsStore:
         db.execute("DROP TABLE group_stats")
         db.execute("ALTER TABLE group_stats_v2 RENAME TO group_stats")
 
+    @staticmethod
+    def _ensure_group_stats_columns(db: sqlite3.Connection) -> None:
+        columns = {str(row[1]) for row in db.execute("PRAGMA table_info(group_stats)").fetchall()}
+        if "broadcast_json" not in columns:
+            db.execute("ALTER TABLE group_stats ADD COLUMN broadcast_json TEXT")
+
     def _init_db(self) -> None:
         with self._lock, self._connect() as db:
             self._migrate_group_stats_if_needed(db)
+            self._ensure_group_stats_columns(db)
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_group_stats_state ON group_stats(state, tracked_at)"
             )
@@ -206,11 +214,17 @@ class StatsStore:
         spectra_endpoint: str,
         player_puuid: str | None = None,
         timestamp_ms: int | None = None,
+        broadcast_info: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         group_code = normalize_group_code(group_code)
         match_id = (match_id or "").strip()
         spectra_endpoint = normalize_endpoint(spectra_endpoint)
         player_puuid = (player_puuid or "").strip() or None
+        broadcast_json = (
+            json.dumps(broadcast_info, separators=(",", ":"), sort_keys=True, ensure_ascii=False)
+            if isinstance(broadcast_info, dict) and broadcast_info
+            else None
+        )
         if not group_code:
             raise ValueError("groupCode is required")
         if not match_id:
@@ -234,6 +248,10 @@ class StatsStore:
                 if player_puuid and not existing["player_puuid"]:
                     updates.append("player_puuid = ?")
                     params.append(player_puuid)
+
+                if broadcast_json and broadcast_json != existing["broadcast_json"]:
+                    updates.append("broadcast_json = ?")
+                    params.append(broadcast_json)
 
                 # v0.2.x used "pending" for a live match and immediately started
                 # Henrik polling. Upgrade that legacy state the next time Spectra
@@ -260,14 +278,15 @@ class StatsStore:
                 """
                 INSERT INTO group_stats (
                     group_code, match_id, spectra_endpoint, player_puuid, region,
-                    state, stats_json, tracked_at, stored_at, expires_at,
+                    state, broadcast_json, stats_json, tracked_at, stored_at, expires_at,
                     last_attempt_at, last_error
-                ) VALUES (?, ?, ?, ?, NULL, 'live', NULL, ?, NULL, NULL, NULL, NULL)
+                ) VALUES (?, ?, ?, ?, NULL, 'live', ?, NULL, ?, NULL, NULL, NULL, NULL)
                 ON CONFLICT(spectra_endpoint, group_code) DO UPDATE SET
                     match_id = excluded.match_id,
                     player_puuid = excluded.player_puuid,
                     region = NULL,
                     state = 'live',
+                    broadcast_json = excluded.broadcast_json,
                     stats_json = NULL,
                     tracked_at = excluded.tracked_at,
                     stored_at = NULL,
@@ -275,7 +294,7 @@ class StatsStore:
                     last_attempt_at = NULL,
                     last_error = NULL
                 """,
-                (group_code, match_id, spectra_endpoint, player_puuid, timestamp_ms),
+                (group_code, match_id, spectra_endpoint, player_puuid, broadcast_json, timestamp_ms),
             )
             db.commit()
         return self.get(group_code, spectra_endpoint) or {}, True
@@ -529,6 +548,12 @@ class StatsStore:
                 stats = json.loads(row["stats_json"])
             except json.JSONDecodeError:
                 stats = None
+        broadcast = None
+        if row["broadcast_json"]:
+            try:
+                broadcast = json.loads(row["broadcast_json"])
+            except json.JSONDecodeError:
+                broadcast = None
         return {
             "groupCode": row["group_code"],
             "matchId": row["match_id"],
@@ -537,6 +562,7 @@ class StatsStore:
             "region": row["region"],
             "state": row["state"],
             "stats": stats,
+            "broadcast": broadcast,
             "trackedAt": row["tracked_at"],
             "storedAt": row["stored_at"],
             "expiresAt": row["expires_at"],

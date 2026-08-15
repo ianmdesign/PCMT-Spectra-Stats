@@ -23,7 +23,7 @@ henrik = HenrikClient(
 tracker = StatsTracker(store, henrik, config)
 watches = SpectraWatchManager(tracker, config)
 
-app = FastAPI(title="PCMT Stats", version="0.3.0")
+app = FastAPI(title="PCMT Stats", version="0.4.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -50,7 +50,7 @@ async def root() -> dict[str, Any]:
     return {
         "service": "PCMT Stats",
         "status": "UP",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "henrikConfigured": henrik.configured,
         "statsLifetimeHours": 24,
         "henrikMaxRequestsPerMinute": config.henrik_max_requests_per_minute,
@@ -68,7 +68,7 @@ async def healthz() -> dict[str, str]:
 async def status() -> dict[str, Any]:
     return {
         "status": "UP",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "henrikConfigured": henrik.configured,
         "activeSpectraWatches": watches.active_count,
         "statsLifetimeHours": 24,
@@ -153,7 +153,10 @@ async def get_stats(
     if row:
         stats = store.get_published_stats(row["groupCode"], row["spectraEndpoint"])
         if stats:
-            return JSONResponse(stats, headers={"Cache-Control": "no-store"})
+            response = dict(stats)
+            if row.get("broadcast"):
+                response["broadcast"] = row["broadcast"]
+            return JSONResponse(response, headers={"Cache-Control": "no-store"})
 
     # Keep the legacy frontend's HTTP-200 polling path quiet. Live, confirmed
     # post-match, and waiting-for-Henrik states all remain a 202-shaped body.
